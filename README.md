@@ -1,6 +1,6 @@
 # ovirt-imageio-populator
-
-[Volume Populator](https://kubernetes.io/blog/2022/05/16/volume-populators-beta/) that uses disks from oVirt as source.
+ 
+[Volume Populator](https://kubernetes.io/blog/2022/05/16/volume-populators-beta/) that uses disks from oVirt as a source.
 Currently only tested on Openshift
 
 ## Installation
