@@ -3,6 +3,7 @@ WORKDIR /app
 
 COPY go.mod ./
 COPY go.sum ./
+COPY *.go ./
 
 # When debugging by replacing the lib-volume-populator with a local modified copy
 # COPY . ./
