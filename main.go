@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
@@ -39,6 +42,7 @@ func main() {
 		showVersion    bool
 		namespace      string
 	)
+
 	// Main arg
 	flag.StringVar(&mode, "mode", "", "Mode to run in (controller, populate)")
 	// Populate args
@@ -95,11 +99,40 @@ type OvirtImageIOPopulator struct {
 }
 
 type OvirtImageIOPopulatorSpec struct {
-	EngineURL      string `json:"engineUrl"`
-	EngineUser     string `json:"engineUser"`
-	EnginePassword string `json:"enginePassword"`
-	EngineCA       string `json:"engineCA"`
-	DiskID         string `json:"diskId"`
+	EngineURL        string `json:"engineUrl"`
+	EngineSecretName string `json:"engineSecretName"`
+	DiskID           string `json:"diskId"`
+}
+
+type engineConfig struct {
+	URL      string
+	username string
+	password string
+	ca       string
+}
+
+func getSecret(populatorConfig OvirtImageIOPopulator) engineConfig {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+	// creates the clientset
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+
+	secret, err := clientset.CoreV1().Secrets(populatorConfig.Namespace).Get(context.TODO(), populatorConfig.Spec.EngineSecretName, metav1.GetOptions{})
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+
+	return engineConfig{
+		URL:      populatorConfig.Spec.EngineURL,
+		username: string(secret.Data["user"]),
+		password: string(secret.Data["password"]),
+		ca:       string(secret.Data["cacert"]),
+	}
 }
 
 func getPopulatorPodArgs(rawBlock bool, u *unstructured.Unstructured) ([]string, error) {
@@ -116,10 +149,11 @@ func getPopulatorPodArgs(rawBlock bool, u *unstructured.Unstructured) ([]string,
 		args = append(args, "--file-name="+mountPath)
 	}
 
-	args = append(args, "--engine-url="+ovirtImageIOPopulator.Spec.EngineURL)
-	args = append(args, "--engine-user="+ovirtImageIOPopulator.Spec.EngineUser)
-	args = append(args, "--engine-password="+ovirtImageIOPopulator.Spec.EnginePassword)
-	args = append(args, "--ca="+ovirtImageIOPopulator.Spec.EngineCA)
+	engineConfig := getSecret(ovirtImageIOPopulator)
+	args = append(args, "--engine-url="+engineConfig.URL)
+	args = append(args, "--engine-user="+engineConfig.username)
+	args = append(args, "--engine-password="+engineConfig.password)
+	args = append(args, "--ca="+engineConfig.ca)
 	args = append(args, "--disk-id="+ovirtImageIOPopulator.Spec.DiskID)
 
 	return args, nil
