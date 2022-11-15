@@ -27,29 +27,25 @@ var version = "unknown"
 
 func main() {
 	var (
-		mode           string
-		engineUrl      string
-		engineUser     string
-		enginePassword string
-		engineCA       string
-		diskID         string
-		fileName       string
-		httpEndpoint   string
-		metricsPath    string
-		masterURL      string
-		kubeconfig     string
-		imageName      string
-		showVersion    bool
-		namespace      string
+		mode         string
+		engineUrl    string
+		secretName   string
+		diskID       string
+		fileName     string
+		httpEndpoint string
+		metricsPath  string
+		masterURL    string
+		kubeconfig   string
+		imageName    string
+		showVersion  bool
+		namespace    string
 	)
 
 	// Main arg
 	flag.StringVar(&mode, "mode", "", "Mode to run in (controller, populate)")
 	// Populate args
 	flag.StringVar(&engineUrl, "engine-url", "", "ovirt-engine url (https//engine.fqdn)")
-	flag.StringVar(&engineUser, "engine-user", "", "ovirt-engine user (admin@ovirt@internalsso)")
-	flag.StringVar(&enginePassword, "engine-password", "", "ovirt-engine password")
-	flag.StringVar(&engineCA, "ca", "", "CA file for imageio")
+	flag.StringVar(&secretName, "secret-name", "", "secret containing oVirt credentials")
 	flag.StringVar(&diskID, "disk-id", "", "ovirt-engine disk id")
 	flag.StringVar(&fileName, "file-name", "", "File name to populate")
 
@@ -62,7 +58,7 @@ func main() {
 	flag.StringVar(&metricsPath, "metrics-path", "/metrics", "The HTTP path where prometheus metrics will be exposed. Default is `/metrics`.")
 	// Other args
 	flag.BoolVar(&showVersion, "version", false, "display the version string")
-	flag.StringVar(&namespace, "namespace", "default", "Namespace to deploy controller")
+	flag.StringVar(&namespace, "namespace", "ovirt-imageio-populator", "Namespace to deploy controller")
 	flag.Parse()
 
 	if showVersion {
@@ -85,7 +81,7 @@ func main() {
 		populator_machinery.RunController(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath,
 			namespace, prefix, gk, gvr, mountPath, devicePath, getPopulatorPodArgs)
 	case "populate":
-		populate(masterURL, kubeconfig, engineUrl, engineUser, enginePassword, engineCA, diskID, fileName)
+		populate(masterURL, kubeconfig, engineUrl, secretName, diskID, fileName, namespace)
 	default:
 		klog.Fatalf("Invalid mode: %s", mode)
 	}
@@ -111,7 +107,7 @@ type engineConfig struct {
 	ca       string
 }
 
-func getSecret(populatorConfig OvirtImageIOPopulator) engineConfig {
+func getSecret(secretName, engineURL, namespace string) engineConfig {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		klog.Fatal(err.Error())
@@ -122,13 +118,13 @@ func getSecret(populatorConfig OvirtImageIOPopulator) engineConfig {
 		klog.Fatal(err.Error())
 	}
 
-	secret, err := clientset.CoreV1().Secrets(populatorConfig.Namespace).Get(context.TODO(), populatorConfig.Spec.EngineSecretName, metav1.GetOptions{})
+	secret, err := clientset.CoreV1().Secrets(namespace).Get(context.TODO(), secretName, metav1.GetOptions{})
 	if err != nil {
 		klog.Fatal(err.Error())
 	}
 
 	return engineConfig{
-		URL:      populatorConfig.Spec.EngineURL,
+		URL:      engineURL,
 		username: string(secret.Data["user"]),
 		password: string(secret.Data["password"]),
 		ca:       string(secret.Data["cacert"]),
@@ -149,19 +145,18 @@ func getPopulatorPodArgs(rawBlock bool, u *unstructured.Unstructured) ([]string,
 		args = append(args, "--file-name="+mountPath)
 	}
 
-	engineConfig := getSecret(ovirtImageIOPopulator)
-	args = append(args, "--engine-url="+engineConfig.URL)
-	args = append(args, "--engine-user="+engineConfig.username)
-	args = append(args, "--engine-password="+engineConfig.password)
-	args = append(args, "--ca="+engineConfig.ca)
+	args = append(args, "--secret-name="+ovirtImageIOPopulator.Spec.EngineSecretName)
 	args = append(args, "--disk-id="+ovirtImageIOPopulator.Spec.DiskID)
+	args = append(args, "--engine-url="+ovirtImageIOPopulator.Spec.EngineURL)
+	args = append(args, "--namespace=ovirt-imageio-populator")
 
 	return args, nil
 }
 
-func populate(masterURL, kubeconfig, engineUrl, engineUser, enginePassword, ca, diskID, fileName string) {
+func populate(masterURL, kubeconfig, engineURL, secretName, diskID, fileName, namespace string) {
 	// TODO handle block device
 
+	engineConfig := getSecret(secretName, engineURL, namespace)
 	// Write credentials to files
 	ovirtPass, err := os.Create("/tmp/ovirt.pass")
 	if err != nil {
@@ -172,7 +167,7 @@ func populate(masterURL, kubeconfig, engineUrl, engineUser, enginePassword, ca, 
 	if err != nil {
 		klog.Fatalf("Failed to create file %s", err)
 	}
-	ovirtPass.Write([]byte(enginePassword))
+	ovirtPass.Write([]byte(engineConfig.password))
 
 	cert, err := os.Create("/tmp/ca.pem")
 	if err != nil {
@@ -184,11 +179,11 @@ func populate(masterURL, kubeconfig, engineUrl, engineUser, enginePassword, ca, 
 		klog.Fatalf("Failed to create file %s", err)
 	}
 
-	cert.Write([]byte(ca))
+	cert.Write([]byte(engineConfig.ca))
 
 	args := []string{"download-disk",
-		"--engine-url=" + engineUrl,
-		"--username=" + engineUser,
+		"--engine-url=" + engineConfig.URL,
+		"--username=" + engineConfig.username,
 		"--password-file=/tmp/ovirt.pass",
 		"--cafile=" + "/tmp/ca.pem",
 		"-f", "raw",
