@@ -2,13 +2,8 @@ apiVersion: forklift.konveyor.io/v1beta1
 kind: OvirtImageIOPopulator
 metadata:
   name: ovirt-imageio1
-  namespace: konveyor-forklift
+  namespace: default
 spec:
-  engineUrl: https://engine.fqdn.com
-  engineUser: admin@ovirt@internalsso
-  enginePassword: pass
-  engineCA: |
-    -----BEGIN CERTIFICATE-----
-    -----END CERTIFICATE-----
+  engineUrl: https://engine.fqdn
+  engineSecretName: vm-11-59-fjxx7
   diskId: 1a6757a4-2af5-41b4-9076-57687be83ecf
-

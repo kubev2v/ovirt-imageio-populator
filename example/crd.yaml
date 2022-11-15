@@ -31,19 +31,13 @@ spec:
             properties:
               engineUrl:
                 type: string
-              engineUser:
-                type: string
-              enginePassword:
-                type: string
-              engineCA:
+              engineSecretName:
                 type: string
               diskId:
-                type: string  
+                type: string
             required:
             - engineUrl
-            - engineUser
-            - enginePassword
-            - engineCA
+            - engineSecretName
             - diskId
             type: object
         required:
