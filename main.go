@@ -142,7 +142,7 @@ func getPopulatorPodArgs(rawBlock bool, u *unstructured.Unstructured) ([]string,
 	if rawBlock {
 		args = append(args, "--file-name="+devicePath)
 	} else {
-		args = append(args, "--file-name="+mountPath)
+		args = append(args, "--file-name="+mountPath+"disk.img")
 	}
 
 	args = append(args, "--secret-name="+ovirtImageIOPopulator.Spec.EngineSecretName)
@@ -154,9 +154,8 @@ func getPopulatorPodArgs(rawBlock bool, u *unstructured.Unstructured) ([]string,
 }
 
 func populate(masterURL, kubeconfig, engineURL, secretName, diskID, fileName, namespace string) {
-	// TODO handle block device
-
 	engineConfig := getSecret(secretName, engineURL, namespace)
+
 	// Write credentials to files
 	ovirtPass, err := os.Create("/tmp/ovirt.pass")
 	if err != nil {
@@ -181,14 +180,16 @@ func populate(masterURL, kubeconfig, engineURL, secretName, diskID, fileName, na
 
 	cert.Write([]byte(engineConfig.ca))
 
-	args := []string{"download-disk",
+	args := []string{
+		"download-disk",
 		"--engine-url=" + engineConfig.URL,
 		"--username=" + engineConfig.username,
 		"--password-file=/tmp/ovirt.pass",
 		"--cafile=" + "/tmp/ca.pem",
 		"-f", "raw",
 		diskID,
-		fileName + "disk.img"} // TODO we don't need "disk.img" if it's a block device
+		fileName,
+	}
 	cmd := exec.Command("ovirt-img", args...)
 	output, err := cmd.CombinedOutput()
 	fmt.Printf("%s\n", output)
