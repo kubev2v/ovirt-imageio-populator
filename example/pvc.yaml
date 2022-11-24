@@ -1,16 +1,17 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: vol-pop-pvc1
+  name: vol-ceph-pvc2
   namespace: default
 spec:
-  storageClassName: nfs-csi
+  storageClassName: csi-rbd-sc
+  volumeMode: Block
   accessModes:
   - ReadWriteOnce
   resources:
     requests:
-      storage: 2Gi
+      storage: 5Gi
   dataSourceRef:
     apiGroup: forklift.konveyor.io
     kind: OvirtImageIOPopulator
-    name: ovirt-imageio1
+    name: vol-ceph-cr2

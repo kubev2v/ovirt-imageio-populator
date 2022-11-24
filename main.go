@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -58,7 +61,7 @@ func main() {
 	flag.StringVar(&metricsPath, "metrics-path", "/metrics", "The HTTP path where prometheus metrics will be exposed. Default is `/metrics`.")
 	// Other args
 	flag.BoolVar(&showVersion, "version", false, "display the version string")
-	flag.StringVar(&namespace, "namespace", "ovirt-imageio-populator", "Namespace to deploy controller")
+	flag.StringVar(&namespace, "namespace", "konveyor-forklift", "Namespace to deploy controller")
 	flag.Parse()
 
 	if showVersion {
@@ -105,6 +108,13 @@ type engineConfig struct {
 	username string
 	password string
 	ca       string
+}
+
+type TransferProgress struct {
+	Transferred uint64  `json:"transferred"`
+	Description string  `json:"description"`
+	Size        *uint64 `json:"size,omitempty"`
+	Elapsed     float64 `json:"elapsed"`
 }
 
 func getSecret(secretName, engineURL, namespace string) engineConfig {
@@ -182,6 +192,7 @@ func populate(masterURL, kubeconfig, engineURL, secretName, diskID, fileName, na
 
 	args := []string{
 		"download-disk",
+		"--output", "json",
 		"--engine-url=" + engineConfig.URL,
 		"--username=" + engineConfig.username,
 		"--password-file=/tmp/ovirt.pass",
@@ -190,9 +201,47 @@ func populate(masterURL, kubeconfig, engineURL, secretName, diskID, fileName, na
 		diskID,
 		fileName,
 	}
+
+	conf, err := rest.InClusterConfig()
+	client, err := dynamic.NewForConfig(conf)
+	group := schema.GroupVersionResource{Group: "cdi.kubevirt.io", Version: "v1beta1", Resource: "datavolumes"}
+	resource := client.Resource(group)
+	_, err = resource.List(context.Background(), metav1.ListOptions{LabelSelector: fmt.Sprintf("id=vol-%s", diskID)})
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+
 	cmd := exec.Command("ovirt-img", args...)
-	output, err := cmd.CombinedOutput()
-	fmt.Printf("%s\n", output)
+	r, _ := cmd.StdoutPipe()
+	cmd.Stderr = cmd.Stdout
+	done := make(chan struct{})
+	scanner := bufio.NewScanner(r)
+
+	go func() {
+		for scanner.Scan() {
+			progressOutput := TransferProgress{}
+			text := scanner.Text()
+			klog.Infof(text)
+			err = json.Unmarshal([]byte(text), &progressOutput)
+			if err != nil {
+				klog.Error(err)
+			}
+		}
+
+		done <- struct{}{}
+	}()
+
+	err = cmd.Start()
+	if err != nil {
+		klog.Fatal(err)
+	}
+
+	<-done
+	err = cmd.Wait()
 	if err != nil {
 		klog.Fatal(err)
 	}

@@ -1,4 +1,4 @@
-FROM golang:1.19.1-alpine3.16
+FROM golang:1.19.3-alpine3.16
 WORKDIR /app
 
 COPY go.mod ./
@@ -11,7 +11,8 @@ COPY *.go ./
 RUN go mod download
 RUN go build -o /main
 
-RUN apk add gcc py3-pip python3-dev linux-headers libc-dev libxml2-dev curl-dev qemu-img
-RUN pip install ovirt-imageio ovirt-engine-sdk-python
+RUN apk add gcc py3-pip python3-dev linux-headers libc-dev libxml2-dev curl-dev qemu-img git
+RUN pip install ovirt-engine-sdk-python
+RUN pip install git+https://github.com/bennyz/ovirt-imageio.git@block-dev-progress
 
 ENTRYPOINT ["/main"]
