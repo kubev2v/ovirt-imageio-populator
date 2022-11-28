@@ -1,4 +1,4 @@
-module forklift.konveyor.io/main
+module forklift.konveyor.io/ovirtimageiopopulator
 
 go 1.18
 
