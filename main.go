@@ -1,17 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 
+	"forklift.konveyor.io/ovirtimageiopopulator/pkg/v1beta1"
 	populator_machinery "github.com/kubernetes-csi/lib-volume-populator/populator-machinery"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -25,6 +29,13 @@ const (
 
 var version = "unknown"
 
+const (
+	groupName  = "forklift.konveyor.io"
+	apiVersion = "v1beta1"
+	kind       = "OvirtImageIOPopulator"
+	resource   = "ovirtimageiopopulators"
+)
+
 func main() {
 	var (
 		mode         string
@@ -32,6 +43,8 @@ func main() {
 		secretName   string
 		diskID       string
 		fileName     string
+		crName       string
+		crNamespace  string
 		httpEndpoint string
 		metricsPath  string
 		masterURL    string
@@ -48,6 +61,8 @@ func main() {
 	flag.StringVar(&secretName, "secret-name", "", "secret containing oVirt credentials")
 	flag.StringVar(&diskID, "disk-id", "", "ovirt-engine disk id")
 	flag.StringVar(&fileName, "file-name", "", "File name to populate")
+	flag.StringVar(&crName, "cr-name", "", "Custom Resource instance name")
+	flag.StringVar(&crNamespace, "cr-namespace", "", "Custom Resource instancce namespace")
 
 	// Controller args
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
@@ -58,7 +73,7 @@ func main() {
 	flag.StringVar(&metricsPath, "metrics-path", "/metrics", "The HTTP path where prometheus metrics will be exposed. Default is `/metrics`.")
 	// Other args
 	flag.BoolVar(&showVersion, "version", false, "display the version string")
-	flag.StringVar(&namespace, "namespace", "ovirt-imageio-populator", "Namespace to deploy controller")
+	flag.StringVar(&namespace, "namespace", "konveyor-forklift", "Namespace to deploy controller")
 	flag.Parse()
 
 	if showVersion {
@@ -68,12 +83,6 @@ func main() {
 
 	switch mode {
 	case "controller":
-		const (
-			groupName  = "forklift.konveyor.io"
-			apiVersion = "v1beta1"
-			kind       = "OvirtImageIOPopulator"
-			resource   = "ovirtimageiopopulators"
-		)
 		var (
 			gk  = schema.GroupKind{Group: groupName, Kind: kind}
 			gvr = schema.GroupVersionResource{Group: groupName, Version: apiVersion, Resource: resource}
@@ -81,23 +90,10 @@ func main() {
 		populator_machinery.RunController(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath,
 			namespace, prefix, gk, gvr, mountPath, devicePath, getPopulatorPodArgs)
 	case "populate":
-		populate(masterURL, kubeconfig, engineUrl, secretName, diskID, fileName, namespace)
+		populate(masterURL, kubeconfig, crName, engineUrl, secretName, diskID, fileName, namespace, crNamespace)
 	default:
 		klog.Fatalf("Invalid mode: %s", mode)
 	}
-}
-
-type OvirtImageIOPopulator struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec OvirtImageIOPopulatorSpec `json:"spec"`
-}
-
-type OvirtImageIOPopulatorSpec struct {
-	EngineURL        string `json:"engineUrl"`
-	EngineSecretName string `json:"engineSecretName"`
-	DiskID           string `json:"diskId"`
 }
 
 type engineConfig struct {
@@ -105,6 +101,13 @@ type engineConfig struct {
 	username string
 	password string
 	ca       string
+}
+
+type TransferProgress struct {
+	Transferred uint64  `json:"transferred"`
+	Description string  `json:"description"`
+	Size        *uint64 `json:"size,omitempty"`
+	Elapsed     float64 `json:"elapsed"`
 }
 
 func getSecret(secretName, engineURL, namespace string) engineConfig {
@@ -132,7 +135,7 @@ func getSecret(secretName, engineURL, namespace string) engineConfig {
 }
 
 func getPopulatorPodArgs(rawBlock bool, u *unstructured.Unstructured) ([]string, error) {
-	var ovirtImageIOPopulator OvirtImageIOPopulator
+	var ovirtImageIOPopulator v1beta1.OvirtImageIOPopulator
 	err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.UnstructuredContent(), &ovirtImageIOPopulator)
 	args := []string{"--mode=populate"}
 	if nil != err {
@@ -148,12 +151,13 @@ func getPopulatorPodArgs(rawBlock bool, u *unstructured.Unstructured) ([]string,
 	args = append(args, "--secret-name="+ovirtImageIOPopulator.Spec.EngineSecretName)
 	args = append(args, "--disk-id="+ovirtImageIOPopulator.Spec.DiskID)
 	args = append(args, "--engine-url="+ovirtImageIOPopulator.Spec.EngineURL)
-	args = append(args, "--namespace=ovirt-imageio-populator")
+	args = append(args, "--cr-name="+ovirtImageIOPopulator.Name)
+	args = append(args, "--cr-namespace="+ovirtImageIOPopulator.Namespace)
 
 	return args, nil
 }
 
-func populate(masterURL, kubeconfig, engineURL, secretName, diskID, fileName, namespace string) {
+func populate(masterURL, kubeconfig, crName, engineURL, secretName, diskID, fileName, namespace, crNamespace string) {
 	engineConfig := getSecret(secretName, engineURL, namespace)
 
 	// Write credentials to files
@@ -182,6 +186,8 @@ func populate(masterURL, kubeconfig, engineURL, secretName, diskID, fileName, na
 
 	args := []string{
 		"download-disk",
+		"--log-level", "debug",
+		"--output", "json",
 		"--engine-url=" + engineConfig.URL,
 		"--username=" + engineConfig.username,
 		"--password-file=/tmp/ovirt.pass",
@@ -190,10 +196,67 @@ func populate(masterURL, kubeconfig, engineURL, secretName, diskID, fileName, na
 		diskID,
 		fileName,
 	}
+
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+
+	client, err := dynamic.NewForConfig(config)
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+
+	gvr := schema.GroupVersionResource{Group: groupName, Version: apiVersion, Resource: resource}
 	cmd := exec.Command("ovirt-img", args...)
-	output, err := cmd.CombinedOutput()
-	fmt.Printf("%s\n", output)
+	r, _ := cmd.StdoutPipe()
+	cmd.Stderr = cmd.Stdout
+	done := make(chan struct{})
+	scanner := bufio.NewScanner(r)
+
+	go func() {
+		for scanner.Scan() {
+			progressOutput := TransferProgress{}
+			text := scanner.Text()
+			klog.Info(text)
+			err = json.Unmarshal([]byte(text), &progressOutput)
+			if err != nil {
+				klog.Error(err)
+			}
+
+			if progressOutput.Size != nil {
+				// We have to get it in the loop to avoid a conflict error
+				populatorCr, err := client.Resource(gvr).Namespace(crNamespace).Get(context.TODO(), crName, metav1.GetOptions{})
+				if err != nil {
+					klog.Error(err.Error())
+				}
+
+				status := map[string]interface{}{"progress": fmt.Sprintf("%d", progressOutput.Transferred)}
+				unstructured.SetNestedField(populatorCr.Object, status, "status")
+
+				_, err = client.Resource(gvr).Namespace(crNamespace).Update(context.TODO(), populatorCr, metav1.UpdateOptions{})
+
+				if err != nil {
+					klog.Error(err)
+				}
+			}
+		}
+
+		done <- struct{}{}
+	}()
+
+	err = cmd.Start()
 	if err != nil {
 		klog.Fatal(err)
+	}
+
+	<-done
+	err = cmd.Wait()
+	if err != nil {
+		klog.Error(err)
 	}
 }

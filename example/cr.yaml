@@ -1,9 +1,11 @@
 apiVersion: forklift.konveyor.io/v1beta1
 kind: OvirtImageIOPopulator
 metadata:
-  name: ovirt-imageio1
+  name: nfs-vol-pop
   namespace: default
 spec:
-  engineUrl: https://engine.fqdn
+  engineUrl: http://engine.fqdn
   engineSecretName: vm-11-59-fjxx7
-  diskId: 1a6757a4-2af5-41b4-9076-57687be83ecf
+  diskId: 9512498e-84ab-45d6-8131-3e12feb800ad
+status:
+  progress: "0"
